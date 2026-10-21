@@ -1,63 +1,52 @@
 # dsh-github
 
-A **DeepSeek Harness (DSH) plugin** that lets the agent work with your GitHub account: sign in once, then create repositories and upload a local project folder — without touching a terminal, a token prompt, or `git push`.
+让 Agent 能直接往你 GitHub 推东西。不用开终端，不用每次贴 token。
 
-[中文说明见下方](#中文说明)
+## 为什么写这个
 
----
+推一个文件夹上去，正常流程是三件事：装 git、凭证、能连上 github.com。任何一件出岔子就卡死。
 
-## Why it exists
+我这边卡的是第三件：`github.com` 握手被重置，`api.github.com` 反而是通的。于是就有了两条路：
 
-Pushing a folder to GitHub normally means `git`, credentials, and a working connection to `github.com`. This plugin turns that into one tool call:
+1. 先做一次 TLS 握手探测，通了就走 `git add/commit/push`
+2. 不通就把文件一个个走 Git Data API 传上去：`blobs` → `trees` → `commits` → `refs`
 
-- **one-time sign-in** — a personal access token, encrypted with Windows DPAPI
-- **create + push in one step** — repository is created if it does not exist
-- **two transport paths** — `git` when `github.com` is reachable, the GitHub **Git Data API** over `api.github.com` when it is not
+结果一样。区别是不通的时候不会再去惊动 git——不然它会弹一个 `CredentialHelperSelector` 框卡住整个调用，我第一次遇到时还以为是中了什么病毒。
 
-That second path matters: on networks where `github.com` is unreachable but `api.github.com` is not, plain `git push` fails forever. The plugin probes the host first and silently switches transports, so the upload still lands.
+## 登录一次就够了
 
-## Tools
+`github_login` 收一个 personal access token，先拿去 `GET /user` 验一下，确认有效才存。
 
-| tool | actions |
+存哪儿：`%LOCALAPPDATA%\dsh-github\cred.txt`，用 **Windows DPAPI** 加密，只有你这台机器上这个 Windows 账户能解开。不进 DSH 配置，不进仓库，也不进聊天记录。
+
+之后换会话、重启电脑都不用再给。要收回就在 GitHub 上点 revoke，本地这份立刻失效。
+
+需要的权限：classic token 勾 `repo` 就够。
+
+## 两个工具
+
+| 工具 | 干什么 |
 |---|---|
-| `github_login` | validate a token against `GET /user`, then store it |
-| `github` | `whoami` · `list_repos` · `create_repo` · `push` |
+| `github_login` | 验证 token 并存起来 |
+| `github` | `whoami` / `list_repos` / `create_repo` / `push` |
 
-`push` parameters: `dir` (absolute local path), `name` (repo name), `branch` (default `main`), `message`, `private`, `create_if_missing`.
+`push` 要的参数：`dir`（本地绝对路径）、`name`（仓库名），可选 `branch`、`message`、`private`。仓库不存在会自动建。
 
-## Install
+## 踩过的坑
 
-```json
-{ "action": "install_bundle", "target": "D:\\path\\to\\dsh-github" }
-```
+写的时候撞上的，记下来免得再撞：
 
-Requires DSH with `plugin_manager`, Windows, and PowerShell 5.1 (built in).
+- **空仓库拒收 blob**。往一个零提交的仓库 POST `/git/blobs` 会返回 409 `Git Repository is empty`。得先用 contents API 塞一个文件把它初始化
+- **BOM 让 DPAPI 读不出来**。`Set-Content -Encoding UTF8` 在 PowerShell 5.1 下会写 BOM，`ConvertTo-SecureString` 直接报 "Input string was not in a correct format"。改成 ASCII 写、读的时候再剥 BOM
+- **TCP 通不等于能用**。只看端口通不通会误判，得做 TLS 握手才算数
+- **git 直推会一直等**。现在超时压到 30 秒，没 `.git` 的目录先 `git init`
 
-## Credentials
+## 局限
 
-- Tokens are validated before being stored.
-- Storage is `%LOCALAPPDATA%\dsh-github\cred.txt`, encrypted with **DPAPI** (`CurrentUser` scope) — only your Windows account on this machine can decrypt it.
-- The token never enters the DSH profile, the plugin config, or the chat transcript.
-- Revoke it on GitHub at any time; the stored copy simply stops working.
-
-Scope needed: classic token with `repo` (or fine-grained with Contents + Administration write).
-
-## How `push` works
-
-1. Ensure the repository exists (create when `create_if_missing` is not `false`).
-2. Probe `github.com:443` for 2.5 s.
-3. Reachable → `git add/commit/push` with the token in the URL.
-4. Not reachable → upload every file through the Git Data API: `blobs` → `trees` → `commits` → `refs`.
-5. An empty repository rejects the blob API, so it is seeded once through the contents API first.
-
-The probe is not a micro-optimisation: without it, a blocked `github.com` makes `git` pop a *CredentialHelperSelector* dialog on Windows that blocks the call.
-
-## Limits
-
-- Files larger than 40 MB are skipped on the API path (the REST API caps blob size).
-- `.git` and `node_modules` are never uploaded.
-- The API path writes one commit per push, no history rewriting.
-- Windows only (DPAPI).
+- API 通道会跳过 40 MB 以上的文件（REST 接口的 blob 上限）
+- `.git` 和 `node_modules` 不上传
+- 每次推送一个提交，不重写历史
+- 只有 Windows（DPAPI）
 
 ## License
 
@@ -65,16 +54,10 @@ MIT
 
 ---
 
-## 中文说明
+## English, briefly
 
-给 **DeepSeek Harness** 用的 GitHub 集成插件。登录一次之后，Agent 就能直接建仓库、把本地文件夹推上去，不用你开终端、不用复制 token、也不用 `git push`。
+A DeepSeek Harness plugin for GitHub: sign in once with a token (stored via Windows DPAPI), then create repositories and upload a folder from a single tool call.
 
-**两个工具**：`github_login`（验证并加密保存 token）、`github`（`whoami` / `list_repos` / `create_repo` / `push`）。
+It has two transports because the network here does not behave: `github.com` resets the handshake while `api.github.com` works fine, so a plain `git push` fails forever. The plugin probes with a real TLS handshake first; if that fails it uploads through the Git Data API instead (blobs → trees → commits → refs). Same result, and no credential-helper dialog blocking the call.
 
-**为什么要两条通道**：有些网络能连 `api.github.com` 但连不上 `github.com`，这时 `git push` 永远失败。插件会先探测 2.5 秒，通就用 git，不通就改用 GitHub 的 Git Data API 直接上传文件，结果一样。
-
-**凭证怎么存**：用 Windows DPAPI 加密放在 `%LOCALAPPDATA%\dsh-github\cred.txt`，只有本机这个 Windows 账户能解开；不进 DSH 配置、不进仓库、不进对话。随时可以在 GitHub 上撤销，撤销后本地这份就失效。
-
-**需要什么权限**：classic token 勾 `repo` 即可（fine-grained 需要 Contents + Administration 写权限）。
-
-**注意**：API 通道会跳过 40 MB 以上的文件；`.git` 和 `node_modules` 不会上传。
+`github_login` validates the token before storing it. `github` handles `whoami`, `list_repos`, `create_repo` and `push`. Files over 40 MB are skipped on the API path; `.git` and `node_modules` are never uploaded. Windows only. MIT.

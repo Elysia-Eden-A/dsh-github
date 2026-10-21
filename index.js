@@ -70,7 +70,7 @@ function git(args, cwd) {
     });
     let out = "";
     let err = "";
-    const timer = setTimeout(() => { child.kill(); reject(new Error("git timed out")); }, 120000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error("git timed out")); }, 30000);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (c) => { out += c; });
