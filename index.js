@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { Socket } from "node:net";
+import { connect as tlsConnect } from "node:tls";
 
 export const name = "dsh-github";
 export const inject = ["tools"];
@@ -83,22 +84,19 @@ function git(args, cwd) {
   });
 }
 
-/** Plain TCP probe; github.com is unreachable on some networks and git would pop a credential dialog. */
+/** TLS handshake probe; a raw TCP connect can succeed while the handshake is reset (common on filtered networks). */
 function canReach(host, port, timeoutMs) {
   return new Promise((resolve) => {
-    const socket = new Socket();
     let settled = false;
     const done = (value) => {
       if (settled) return;
       settled = true;
-      socket.destroy();
+      try { socket.destroy(); } catch { /* already gone */ }
       resolve(value);
     };
-    socket.setTimeout(timeoutMs);
-    socket.once("connect", () => done(true));
+    const socket = tlsConnect({ host, port, servername: host, timeout: timeoutMs }, () => done(true));
     socket.once("timeout", () => done(false));
     socket.once("error", () => done(false));
-    socket.connect(port, host);
   });
 }
 
@@ -214,6 +212,7 @@ const ghTool = {
       const gitReachable = await canReach("github.com", 443, 2500);
       if (gitReachable) {
         try {
+        try { await git(["rev-parse", "--git-dir"], dir); } catch { await git(["init", "-q"], dir); }
         await git(["add", "-A"], dir);
         const status = await git(["status", "--porcelain"], dir);
         if (status) {
