@@ -1,0 +1,4 @@
+- insert:
+    - id: github
+      name: '@local/dsh-github'
+      config: {}

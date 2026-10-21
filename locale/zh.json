@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GitHub 集成",
+    "description": "用一次个人访问令牌登录，之后 Agent 就能直接创建仓库、把本地项目文件夹推送到你的 GitHub。"
+  }
+}
